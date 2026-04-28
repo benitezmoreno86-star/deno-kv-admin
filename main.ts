@@ -1,154 +1,71 @@
-import { Hono } from "https://deno.land/x/hono@v3.4.1/mod.ts";
-import { HTTPException } from "https://deno.land/x/hono@v3.12.10/http-exception.ts";
+import { Hono } from "https://deno.land/x/hono@v3.11.7/mod.ts";
+import { HTTPException } from "https://deno.land/x/hono@v3.11.7/http-exception.ts";
+import { logger } from "https://deno.land/x/hono@v3.11.7/middleware/logger/index.ts";
 
 const app = new Hono();
-const kv = await Deno.openKv();
 
-// Basic KV operations to support admin interface
+app.use("*", logger());
 
-// Set a record by key (POST body is JSON)
-// https://pg4e-deno-kv-api-10.deno.dev/kv/set/books/Hamlet?key=123
-app.post("/kv/set/:key{.*}", async (c) => {
-  checkToken(c);
-  const key = c.req.param("key");
-  const body = await c.req.json();
-  const result = await kv.set(key.split('/'), body);
-  return c.json(result);
+app.get("/", (c) => {
+  return c.text("Hello Deno KV Admin!");
 });
 
-// Get a record by key
-// https://pg4e-deno-kv-api-10.deno.dev/kv/get/books/Hamlet?key=123
-app.get("/kv/get/:key{.*}", async (c) => {
+app.get("/dump", async (c) => {
   checkToken(c);
-  const key = c.req.param("key");
-  const result = await kv.get(key.split('/'));
-  return c.json(result);
-});
-
-// List records with a key prefix
-// https://pg4e-deno-kv-api-10.deno.dev/kv/list/books
-app.get("/kv/list/:key{.*}", async (c) => {
-  checkToken(c);
-  const key = c.req.param("key");
-  const cursor = c.req.query("cursor");
-  const extra = {'limit': 100};
-  if ( typeof cursor == 'string' && cursor.length > 0 ) {
-    extra['cursor'] = cursor;
-  }
-  const iter = await kv.list({ prefix: key.split('/') }, extra );
-  const records = [];
+  const ckv = await Deno.openKv();
+  const iter = await ckv.list({ prefix: [] });
+  const data: Record<string, any> = {};
   for await (const entry of iter) {
-    records.push(entry);
+    data[JSON.stringify(entry.key)] = entry.value;
   }
-  return c.json({'records': records, 'cursor': iter.cursor});
+  return c.json(data);
 });
 
-// Delete a record
-// https://pg4e-deno-kv-api-10.deno.dev/kv/delete/books/Hamlet?key=123
-app.delete("/kv/delete/:key{.*}", async (c) => {
+app.get("/get", async (c) => {
   checkToken(c);
-  const key = c.req.param("key");
-  const result = await kv.delete(key.split('/'));
-  return c.json(result);
+  const key = c.req.query("key");
+  if (!key) throw new HTTPException(400, { message: "Key is required" });
+  const ckv = await Deno.openKv();
+  const res = await ckv.get([key]);
+  return c.json(res.value);
 });
 
-// Delete a prefix
-// https://pg4e-deno-kv-api-10.deno.dev/kv/delete/books/nonfiction?key=123
-app.delete("/kv/delete_prefix/:key{.*}", async (c) => {
+app.get("/put", async (c) => {
   checkToken(c);
-  const key = c.req.param("key");
-  const iter = await kv.list({ prefix: key.split('/') });
-  const keys = [];
-  for await (const entry of iter) {
-    kv.delete(entry.key);
-    keys.push(entry.key);
-  }
-  console.log("Keys with prefix", key, "deleted:", keys.length);
-  return c.json({'keys': keys});
+  const key = c.req.query("key");
+  const value = c.req.query("value");
+  if (!key || !value) throw new HTTPException(400, { message: "Key and value are required" });
+  const ckv = await Deno.openKv();
+  await ckv.set([key], value);
+  return c.json({ success: true });
 });
 
-// Full database reset
-// https://pg4e-deno-kv-api-10.deno.dev/kv/full_reset_42?key=123
-app.delete("/kv/full_reset_42", async (c) => {
+app.get("/delete", async (c) => {
   checkToken(c);
-  const iter = await kv.list({ prefix: [] });
-  const keys = [];
-  for await (const entry of iter) {
-    kv.delete(entry.key);
-    keys.push(entry);
-  }
-  console.log("Database reset keys deleted:", keys.length);
-  return c.json({'keys': keys});
+  const key = c.req.query("key");
+  if (!key) throw new HTTPException(400, { message: "Key is required" });
+  const ckv = await Deno.openKv();
+  await ckv.delete([key]);
+  return c.json({ success: true });
 });
 
-// Dump the request object for learning and debugging
-// https://pg4e-deno-kv-api-10.deno.dev/dump/stuff/goes_here?key=123
-app.all('/dump/*', async (c) => {
-  const req = c.req
-
-  // Request details
-  const method = req.method
-  const url = req.url
-  const path = req.path
-  const query = req.query()
-  const headers: Record<string, string> = {}
-  for (const [key, value] of req.raw.headers.entries()) {
-    headers[key] = value
-  }
-
-  // Try to parse body as JSON, otherwise fallback to text
-  let body: any = null
-  try {
-    body = await req.json()
-  } catch {
-    try {
-      body = await req.text()
-    } catch {
-      body = null
-    }
-  }
-
-  const dump = {
-    method,
-    url,
-    path,
-    headers,
-    query,
-    body,
-  }
-
-  return c.json(dump, 200)
-});
-
-// Make sure we return the correct HTTP Status code when we throw an exception
-app.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    return c.text(err.message, err.status);
-  }
-  return c.text('Internal Server Error', 500);
-});
-
-// Insure security - The autograder will have you change this value
+// A função que o exercício pede para mudar:
 function checkToken(c) {
   const token = c.req.query("token");
-  if ( token == '42' ) return true;
+  // Abaixo está o seu token configurado
+  if ( token == '2607_2d1843:42344a' ) return true;
   throw new HTTPException(401, { message: 'Missing or invalid token' }); 
 }
 
-if ( token == '2607_2d1843:42344a' ) return true;
-// CRON entry or change it to be once per month with "0 0 1 * *" as
-// the CRON string
 Deno.cron("Hourly DB Reset", "0 * * * *", async () => {
   const ckv = await Deno.openKv();
   const iter = await ckv.list({ prefix: [] });
-  const keys = [];
   let count = 0;
   for await (const entry of iter) {
-    ckv.delete(entry.key);
+    await ckv.delete(entry.key);
     count++;
-    if ( count < 10 ) keys.push(entry.key);
   }
-  console.log("Hourly reset keys deleted:", count, keys);
+  console.log("Hourly reset keys deleted:", count);
 });
 
 Deno.serve(app.fetch);
